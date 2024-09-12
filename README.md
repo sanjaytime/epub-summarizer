@@ -1,11 +1,12 @@
 # EPUB Summarizer
 
-This project provides a Python script that generates a chapter-by-chapter summary of an EPUB file using the OpenAI GPT-4 model. The summarizer runs in a Docker container for easy setup and execution.
+This project provides a Python script that generates a chapter-by-chapter summary of an EPUB file using either OpenAI's GPT-4 or Anthropic's Claude 3.5 Sonnet model. The summarizer runs in a Docker container for easy setup and execution.
 
 ## Prerequisites
 
 - Docker installed on your system
-- An OpenAI API key
+- An OpenAI API key (for GPT-4)
+- An Anthropic API key (for Claude 3.5 Sonnet)
 
 ## Setup
 
@@ -15,11 +16,13 @@ This project provides a Python script that generates a chapter-by-chapter summar
    cd epub-summarizer
    ```
 
-2. Create a file named `openai_key.txt` in the project root directory and paste your OpenAI API key into it.
+2. Create two files in the project root directory:
+   - `openai_key.txt`: Paste your OpenAI API key into this file.
+   - `anthropic_key.txt`: Paste your Anthropic API key into this file.
 
 3. Build the Docker image:
    ```
-   docker build -t epub-summarizer .
+   docker build -t epub_summarizer .
    ```
 
 ## Usage
@@ -27,10 +30,15 @@ This project provides a Python script that generates a chapter-by-chapter summar
 To summarize an EPUB file, use the following command:
 
 ```
-./run_summarizer.sh /path/to/your/book.epub
+./run_summarizer.sh <model> /path/to/your/book.epub
 ```
 
-Replace `/path/to/your/book.epub` with the actual path to your EPUB file.
+Replace `<model>` with either `gpt-4` or `claude-3-sonnet`, and `/path/to/your/book.epub` with the actual path to your EPUB file.
+
+Example:
+```
+./run_summarizer.sh gpt-4 "My Book.epub"
+```
 
 The script will process the EPUB file chapter by chapter, providing summaries as they are generated. The final summary will be saved in the `summarized` directory with a filename based on the original EPUB file name.
 

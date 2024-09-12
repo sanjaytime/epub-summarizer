@@ -4,6 +4,7 @@ import ebooklib
 from ebooklib import epub
 from bs4 import BeautifulSoup
 import openai
+import anthropic
 import time
 import colorama
 import logging
@@ -32,21 +33,34 @@ def clean_text(content):
     soup = BeautifulSoup(content, 'html.parser')
     return soup.get_text().strip()
 
-def summarize_text(text, api_key, max_bullets=3, max_retries=5):
+def summarize_text(text, api_key, model, max_bullets=3, max_retries=5):
     if not text:
         return "This chapter appears to be empty."
-    openai.api_key = api_key
+    
     for attempt in range(max_retries):
         try:
-            response = openai.ChatCompletion.create(
-                model="gpt-4",
-                messages=[
-                    {"role": "system", "content": f"You are a helpful assistant that summarizes text. Provide summaries in {max_bullets} bullet points max, being as concise as possible."},
-                    {"role": "user", "content": f"Please summarize the following text in {max_bullets} bullet points max:\n\n{text}"}
-                ]
-            )
-            return response.choices[0].message['content']
-        except openai.error.RateLimitError as e:
+            if model == 'gpt-4':
+                openai.api_key = api_key
+                response = openai.ChatCompletion.create(
+                    model="gpt-4",
+                    messages=[
+                        {"role": "system", "content": f"You are a helpful assistant that summarizes text. Provide summaries in {max_bullets} bullet points max, being as concise as possible."},
+                        {"role": "user", "content": f"Please summarize the following text in {max_bullets} bullet points max:\n\n{text}"}
+                    ]
+                )
+                return response.choices[0].message['content']
+            elif model == 'claude-3-sonnet':
+                client = anthropic.Anthropic(api_key=api_key)
+                response = client.messages.create(
+                    model="claude-3-sonnet-20240229",
+                    max_tokens=1000,
+                    messages=[
+                        {"role": "system", "content": f"You are a helpful assistant that summarizes text. Provide summaries in {max_bullets} bullet points max, being as concise as possible."},
+                        {"role": "user", "content": f"Please summarize the following text in {max_bullets} bullet points max:\n\n{text}"}
+                    ]
+                )
+                return response.content[0].text
+        except (openai.error.RateLimitError, anthropic.RateLimitError) as e:
             if attempt < max_retries - 1:
                 wait_time = 2 ** attempt  # exponential backoff
                 stop_event = threading.Event()
@@ -73,7 +87,7 @@ def get_chapter_title(chapter):
         return h1.text.strip()
     return "Untitled Chapter"
 
-def process_epub(epub_path, api_key):
+def process_epub(epub_path, api_key, model):
     book = epub.read_epub(epub_path)
     chapters = []
     
@@ -98,7 +112,7 @@ def process_epub(epub_path, api_key):
         spinner_thread.start()
         
         try:
-            summary = summarize_text(content, api_key)
+            summary = summarize_text(content, api_key, model)
             total_tokens += len(content.split()) + len(summary.split())
             
             stop_event.set()
@@ -126,7 +140,7 @@ def process_epub(epub_path, api_key):
     
     return summaries, total_tokens
 
-def create_book_summary(summaries, api_key):
+def create_book_summary(summaries, api_key, model):
     combined_summary = "\n".join(summaries)
     prompt = """You are Atlas, an expert in reading and understanding books with 20 years of experience. Your task is to provide a comprehensive summary of the book based on the following chapter summaries. Assume the reader is interested in a "Deep Concept Summary". Format your summary using bullet points for key ideas and tables to highlight key concepts. Include implementable takeaways from the book. After the summary, provide a formatted list of topics you can go in-depth into. Use markdown format for your response.
 
@@ -143,29 +157,28 @@ Please provide:
 """
     
     try:
-        response = openai.ChatCompletion.create(
-            model="gpt-4",
-            messages=[
-                {"role": "system", "content": "You are Atlas, an expert book summarizer."},
-                {"role": "user", "content": prompt}
-            ]
-        )
-        return "# Book Summary\n\n" + response.choices[0].message['content'] + "\n\n# Chapter Summaries\n\n"
+        return summarize_text(prompt, api_key, model, max_bullets=None)
     except Exception as e:
         logging.error(f"Error in create_book_summary: {str(e)}")
-        return f"Error creating book summary: {str(e)}\n\n# Chapter Summaries\n\n"
+        return f"Error creating book summary: {str(e)}\n\n"
 
-def save_summary(book_summary, summaries, epub_path, total_tokens):
+def save_summary(book_summary, summaries, epub_path, total_tokens, model):
     base_name = os.path.splitext(os.path.basename(epub_path))[0]
     output_dir = "summarized"
     os.makedirs(output_dir, exist_ok=True)
     output_path = os.path.join(output_dir, f"{base_name}_summary.md")
     
-    estimated_cost = (total_tokens / 1000) * 0.06  # $0.06 per 1K tokens for GPT-4
+    if model == 'gpt-4':
+        estimated_cost = (total_tokens / 1000) * 0.06  # $0.06 per 1K tokens for GPT-4
+    elif model == 'claude-3-sonnet':
+        estimated_cost = (total_tokens / 1000) * 0.03  # $0.03 per 1K tokens for Claude 3 Sonnet (estimated)
     
     with open(output_path, 'w') as f:
+        f.write(f"# Book Summary for {base_name}\n\n")
+        f.write(f"Generated using {model}\n\n")
         f.write(f"Estimated cost: ${estimated_cost:.2f}\n\n")
         f.write(book_summary)
+        f.write("\n\n# Chapter Summaries\n\n")
         for summary in summaries:
             f.write(summary)
     
@@ -173,23 +186,33 @@ def save_summary(book_summary, summaries, epub_path, total_tokens):
     print(f"{colorama.Fore.YELLOW}Estimated cost: ${estimated_cost:.2f}")
 
 def main():
-    if len(sys.argv) != 2:
-        print(f"{colorama.Fore.RED}Usage: python summarize.py <path_to_epub>")
+    if len(sys.argv) != 3:
+        print(f"{colorama.Fore.RED}Usage: python summarize.py <model> <path_to_epub>")
+        print(f"{colorama.Fore.RED}Available models: gpt-4, claude-3-sonnet")
         sys.exit(1)
 
-    epub_path = sys.argv[1]
+    model = sys.argv[1]
+    epub_path = sys.argv[2]
     
-    try:
-        with open('openai_key.txt', 'r') as f:
-            api_key = f.read().strip()
-    except FileNotFoundError:
-        print(f"{colorama.Fore.RED}Error: openai_key.txt not found. Please create this file with your OpenAI API key.")
+    if model not in ['gpt-4', 'claude-3-sonnet']:
+        print(f"{colorama.Fore.RED}Invalid model. Available models: gpt-4, claude-3-sonnet")
         sys.exit(1)
     
     try:
-        summaries, total_tokens = process_epub(epub_path, api_key)
-        book_summary = create_book_summary(summaries, api_key)
-        save_summary(book_summary, summaries, epub_path, total_tokens)
+        if model == 'gpt-4':
+            with open('openai_key.txt', 'r') as f:
+                api_key = f.read().strip()
+        elif model == 'claude-3-sonnet':
+            with open('anthropic_key.txt', 'r') as f:
+                api_key = f.read().strip()
+    except FileNotFoundError:
+        print(f"{colorama.Fore.RED}Error: API key file not found. Please create the appropriate key file.")
+        sys.exit(1)
+    
+    try:
+        summaries, total_tokens = process_epub(epub_path, api_key, model)
+        book_summary = create_book_summary(summaries, api_key, model)
+        save_summary(book_summary, summaries, epub_path, total_tokens, model)
     except Exception as e:
         logging.error(f"An error occurred: {str(e)}")
         print(f"{colorama.Fore.RED}An error occurred. Please check the logs for more information.")
