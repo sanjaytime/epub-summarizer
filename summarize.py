@@ -4,7 +4,7 @@ import ebooklib
 from ebooklib import epub
 from bs4 import BeautifulSoup
 import openai
-import anthropic
+from anthropic import Anthropic
 import time
 import colorama
 import logging
@@ -36,7 +36,7 @@ def clean_text(content):
 def summarize_text(text, api_key, model, max_bullets=3, max_retries=5):
     if not text:
         return "This chapter appears to be empty."
-    
+
     for attempt in range(max_retries):
         try:
             if model == 'gpt-4':
@@ -50,32 +50,28 @@ def summarize_text(text, api_key, model, max_bullets=3, max_retries=5):
                 )
                 return response.choices[0].message['content']
             elif model == 'claude-3-sonnet':
-                client = anthropic.Anthropic(api_key=api_key)
-                response = client.messages.create(
+                client = Anthropic(api_key=api_key)
+                message = client.messages.create(
                     model="claude-3-sonnet-20240229",
                     max_tokens=1000,
                     messages=[
-                        {"role": "system", "content": f"You are a helpful assistant that summarizes text. Provide summaries in {max_bullets} bullet points max, being as concise as possible."},
-                        {"role": "user", "content": f"Please summarize the following text in {max_bullets} bullet points max:\n\n{text}"}
+                        {"role": "user", "content": f"You are a helpful assistant that summarizes text. Provide summaries in {max_bullets} bullet points max, being as concise as possible. Please summarize the following text in {max_bullets} bullet points max:\n\n{text}"}
                     ]
                 )
-                return response.content[0].text
-        except (openai.error.RateLimitError, anthropic.RateLimitError) as e:
+                return message.content[0].text
+        except Exception as e:
             if attempt < max_retries - 1:
                 wait_time = 2 ** attempt  # exponential backoff
                 stop_event = threading.Event()
-                retry_message = f"Rate limit reached. Retry attempt {attempt + 1}/{max_retries}"
+                retry_message = f"Error occurred. Retry attempt {attempt + 1}/{max_retries}"
                 retry_thread = threading.Thread(target=display_animation, args=(stop_event, retry_message, retry_animation))
                 retry_thread.start()
                 time.sleep(wait_time)
                 stop_event.set()
                 retry_thread.join()
             else:
-                logging.error(f"Rate limit error after {max_retries} attempts: {str(e)}")
-                return f"Error summarizing text due to rate limit: {str(e)}"
-        except Exception as e:
-            logging.error(f"Error in summarize_text: {str(e)}")
-            return f"Error summarizing text: {str(e)}"
+                logging.error(f"Error after {max_retries} attempts: {str(e)}")
+                return f"Error summarizing text: {str(e)}"
 
 def get_chapter_title(chapter):
     soup = BeautifulSoup(chapter.get_content(), 'html.parser')
@@ -90,39 +86,39 @@ def get_chapter_title(chapter):
 def process_epub(epub_path, api_key, model):
     book = epub.read_epub(epub_path)
     chapters = []
-    
+
     for item in book.get_items():
         if item.get_type() == ebooklib.ITEM_DOCUMENT:
             chapters.append(item)
-    
+
     summaries = []
     total_tokens = 0
-    
+
     logging.info(f"Found {len(chapters)} chapters")
     print(f"{colorama.Fore.CYAN}Summarizing {len(chapters)} chapters:")
-    
+
     for i, chapter in enumerate(chapters):
         chapter_title = get_chapter_title(chapter)
         content = clean_text(chapter.get_content().decode('utf-8'))
         logging.info(f"Processing chapter {i+1}: {chapter_title}, content length: {len(content)}")
-        
+
         stop_event = threading.Event()
         spinner_message = f"Processing chapter {i+1}/{len(chapters)}: {chapter_title}"
         spinner_thread = threading.Thread(target=display_animation, args=(stop_event, spinner_message, spinner_animation))
         spinner_thread.start()
-        
+
         try:
             summary = summarize_text(content, api_key, model)
             total_tokens += len(content.split()) + len(summary.split())
-            
+
             stop_event.set()
             spinner_thread.join()
-            
+
             summaries.append(f"## Chapter {i+1}: {chapter_title}\n\n{summary}\n")
-            
+
             print(f"{colorama.Fore.GREEN}[{i+1}/{len(chapters)}] {chapter_title} - Summarized")
             print(f"{colorama.Fore.YELLOW}{summary}")
-            
+
             if i < len(chapters) - 1:
                 print(f"\n{colorama.Fore.MAGENTA}Processing next chapter...")
                 time.sleep(2)  # Pause to show the summary before moving to the next chapter
@@ -137,7 +133,7 @@ def process_epub(epub_path, api_key, model):
             spinner_thread.join()
             logging.error(f"Error processing chapter {i+1}: {str(e)}")
             summaries.append(f"## Chapter {i+1}: {chapter_title}\n\nError processing this chapter: {str(e)}\n")
-    
+
     return summaries, total_tokens
 
 def create_book_summary(summaries, api_key, model):
@@ -155,7 +151,7 @@ Please provide:
 4. Implementable takeaways
 5. A list of topics for further exploration
 """
-    
+
     try:
         return summarize_text(prompt, api_key, model, max_bullets=None)
     except Exception as e:
@@ -167,12 +163,12 @@ def save_summary(book_summary, summaries, epub_path, total_tokens, model):
     output_dir = "summarized"
     os.makedirs(output_dir, exist_ok=True)
     output_path = os.path.join(output_dir, f"{base_name}_summary.md")
-    
+
     if model == 'gpt-4':
         estimated_cost = (total_tokens / 1000) * 0.06  # $0.06 per 1K tokens for GPT-4
     elif model == 'claude-3-sonnet':
         estimated_cost = (total_tokens / 1000) * 0.03  # $0.03 per 1K tokens for Claude 3 Sonnet (estimated)
-    
+
     with open(output_path, 'w') as f:
         f.write(f"# Book Summary for {base_name}\n\n")
         f.write(f"Generated using {model}\n\n")
@@ -181,7 +177,7 @@ def save_summary(book_summary, summaries, epub_path, total_tokens, model):
         f.write("\n\n# Chapter Summaries\n\n")
         for summary in summaries:
             f.write(summary)
-    
+
     print(f"\n{colorama.Fore.GREEN}Summary saved to: {output_path}")
     print(f"{colorama.Fore.YELLOW}Estimated cost: ${estimated_cost:.2f}")
 
@@ -193,11 +189,11 @@ def main():
 
     model = sys.argv[1]
     epub_path = sys.argv[2]
-    
+
     if model not in ['gpt-4', 'claude-3-sonnet']:
         print(f"{colorama.Fore.RED}Invalid model. Available models: gpt-4, claude-3-sonnet")
         sys.exit(1)
-    
+
     try:
         if model == 'gpt-4':
             with open('openai_key.txt', 'r') as f:
@@ -208,7 +204,7 @@ def main():
     except FileNotFoundError:
         print(f"{colorama.Fore.RED}Error: API key file not found. Please create the appropriate key file.")
         sys.exit(1)
-    
+
     try:
         summaries, total_tokens = process_epub(epub_path, api_key, model)
         book_summary = create_book_summary(summaries, api_key, model)
