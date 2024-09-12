@@ -143,7 +143,11 @@ def process_epub(epub_path, api_key, model):
 
 def create_book_summary(summaries, api_key, model):
     combined_summary = "\n".join(summaries)
-    prompt = """You are Atlas, an expert in reading and understanding books with 20 years of experience. Your task is to provide a comprehensive summary of the book based on the following chapter summaries. Format your response as follows:
+    book_title = "Pedagogy of the Oppressed"
+    author = "Paulo Freire"
+    prompt = f"""You are Atlas, an expert in reading and understanding books with 20 years of experience. Your task is to provide a comprehensive summary of the book "{book_title}" by {author} based on the following chapter summaries. The book discusses educational philosophy, oppression, and liberation. Please ensure your summary accurately reflects the content of these chapter summaries and the overall theme of the book.
+
+Format your response as follows:
 
 1. Deep Concept Summary: Provide a concise overview of the book's main themes and arguments.
 2. Key Ideas: List the most important concepts in bullet points.
@@ -155,17 +159,34 @@ Here are the chapter summaries:
 
 {combined_summary}
 
-Please provide your analysis in the format described above, using markdown formatting."""
+Please provide your analysis in the format described above, using markdown formatting. Ensure that your summary is directly related to the content of "{book_title}" and the ideas presented in the chapter summaries."""
 
     try:
-        return summarize_text(prompt, api_key, model, max_bullets=None)
+        summary = summarize_text(prompt, api_key, model, max_bullets=None)
+        
+        # Verify the relevance of the summary
+        verification_prompt = f"""Please verify if the following summary accurately reflects the content of "{book_title}" by {author}, based on the chapter summaries provided earlier. If it does not, please provide a brief explanation of why it's inaccurate and suggest improvements. If it is accurate, simply respond with "The summary is accurate and relevant."
+
+Summary to verify:
+{summary}"""
+        
+        verification = summarize_text(verification_prompt, api_key, model, max_bullets=None)
+        
+        if "The summary is accurate and relevant" in verification:
+            return summary
+        else:
+            logging.warning("The generated summary may not be accurate. Please review the following feedback:")
+            print(f"{colorama.Fore.YELLOW}Warning: The generated summary may not be accurate. Please review the following feedback:")
+            print(f"{colorama.Fore.YELLOW}{verification}")
+            return summary + "\n\n## Verification Feedback\n\n" + verification
+        
     except Exception as e:
         logging.error(f"Error in create_book_summary: {str(e)}")
         return f"Error creating book summary: {str(e)}\n\n"
 
 def save_summary(book_summary, summaries, epub_path, total_tokens, model):
     base_name = os.path.splitext(os.path.basename(epub_path))[0]
-    output_dir = "example_summaries"
+    output_dir = "summarized"
     os.makedirs(output_dir, exist_ok=True)
     output_path = os.path.join(output_dir, f"{base_name}_{model}_summary.md")
 
