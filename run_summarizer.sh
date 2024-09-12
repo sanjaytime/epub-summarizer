@@ -1,14 +1,17 @@
 #!/bin/bash
 
-# Check if the required parameter is provided
-if [ "$#" -ne 1 ]; then
-    echo "Usage: ./run_summarizer.sh <path_to_epub_file>"
+if [ $# -eq 0 ]; then
+    echo "Usage: ./run_summarizer.sh <path_to_epub>"
     exit 1
 fi
 
-EPUB_FILE=$1
+EPUB_PATH=$(realpath "$1")
+EPUB_FILENAME=$(basename "$EPUB_PATH")
+SCRIPT_DIR=$(dirname "$(realpath "$0")")
 
-# Run the docker container interactively and pass the EPUB file
 docker run -it --rm \
-    -v "$(pwd)":/app \
-    epub_summarizer python summarize.py /app/"$EPUB_FILE"
+    -v "$SCRIPT_DIR/openai_key.txt:/app/openai_key.txt" \
+    -v "$EPUB_PATH:/app/input.epub" \
+    -v "$SCRIPT_DIR/summarized:/app/summarized" \
+    epub_summarizer \
+    python summarize.py "input.epub"

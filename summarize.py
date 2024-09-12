@@ -4,152 +4,142 @@ import ebooklib
 from ebooklib import epub
 from bs4 import BeautifulSoup
 import openai
-import re
+from tqdm import tqdm
+import time
+import markdown
+import colorama
 import logging
-from tqdm import tqdm  # For progress bar
+from itertools import cycle
+import threading
 
-# Initialize logging
-logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
+colorama.init()
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
-# Function to split text into chunks that fit within the token limit
-def split_text_into_chunks(text, max_tokens_per_chunk=3500):
-    words = text.split()
-    chunks = []
-    chunk = []
-    
-    for word in words:
-        chunk.append(word)
-        if len(chunk) >= max_tokens_per_chunk:
-            chunks.append(" ".join(chunk))
-            chunk = []
-    
-    if chunk:
-        chunks.append(" ".join(chunk))
-    
-    return chunks
+def spinner():
+    return cycle(['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'])
 
-# Function to extract text and chapter titles from the epub file
-def extract_chapters_from_epub(epub_file):
-    book = epub.read_epub(epub_file)
+def loading_animation(stop_event):
+    spin = spinner()
+    while not stop_event.is_set():
+        sys.stdout.write(next(spin))
+        sys.stdout.flush()
+        sys.stdout.write('\b')
+        time.sleep(0.1)
+
+def clean_text(content):
+    soup = BeautifulSoup(content, 'html.parser')
+    return soup.get_text().strip()
+
+def summarize_text(text, api_key):
+    if not text:
+        return "This chapter appears to be empty."
+    openai.api_key = api_key
+    try:
+        response = openai.ChatCompletion.create(
+            model="gpt-4",
+            messages=[
+                {"role": "system", "content": "You are a helpful assistant that summarizes text. Provide summaries in bullet points."},
+                {"role": "user", "content": f"Please summarize the following text in bullet points:\n\n{text}"}
+            ]
+        )
+        return response.choices[0].message['content']
+    except Exception as e:
+        logging.error(f"Error in summarize_text: {str(e)}")
+        return f"Error summarizing text: {str(e)}"
+
+def get_chapter_title(chapter):
+    soup = BeautifulSoup(chapter.get_content(), 'html.parser')
+    title = soup.find('title')
+    if title:
+        return title.text.strip()
+    h1 = soup.find('h1')
+    if h1:
+        return h1.text.strip()
+    return "Untitled Chapter"
+
+def process_epub(epub_path, api_key):
+    book = epub.read_epub(epub_path)
     chapters = []
-
-    # Loop through all items in the book
+    
     for item in book.get_items():
         if item.get_type() == ebooklib.ITEM_DOCUMENT:
-            # Parse the HTML content using BeautifulSoup
-            soup = BeautifulSoup(item.get_body_content(), 'html.parser')
-
-            # Try to extract a chapter title if available
-            chapter_title = soup.find('h1') or soup.find('h2') or soup.find('h3')  # Common header tags for chapter titles
-            chapter_title = chapter_title.get_text() if chapter_title else None
-
-            # Extract chapter text
-            clean_text = soup.get_text()
-            clean_text = re.sub(r'\s+', ' ', clean_text)  # Remove excess whitespace
-
-            chapters.append({
-                'title': chapter_title if chapter_title else f"Chapter {len(chapters) + 1}",
-                'text': clean_text
-            })
-
-    return chapters
-
-# Improved prompt to get more focused, detailed summaries
-def generate_summary_prompt(chapter_title, chapter_text):
-    return f"""
-    You are an expert book summarizer. Your job is to summarize books accurately and concisely.
-
-    Here is a chapter titled '{chapter_title}' from an EPUB book. Please provide a detailed summary of this chapter, focusing on:
-    - The key points and major themes
-    - Important events or concepts discussed
-    - The overall structure of the chapter
-    Keep your summary clear and concise, but make sure it covers the essential content.
-    """
-
-# Function to generate summary using OpenAI API
-def generate_summary(api_key, chapter_title, text, max_tokens=300):
-    openai.api_key = api_key
+            chapters.append(item)
     
-    # Split the text into smaller chunks if necessary
-    text_chunks = split_text_into_chunks(text)
-    final_summary = []
-
-    for chunk in text_chunks:
-        prompt = generate_summary_prompt(chapter_title, chunk)
-        response = openai.ChatCompletion.create(
-            model="gpt-3.5-turbo",
-            messages=[
-                {"role": "system", "content": "You are a professional book summarizer."},
-                {"role": "user", "content": prompt}
-            ],
-            max_tokens=max_tokens
-        )
-        final_summary.append(response['choices'][0]['message']['content'])
-    
-    return " ".join(final_summary)
-
-# Function to save summary to markdown file
-def save_summary_to_markdown(epub_file, summaries):
-    # Create the 'summarized' directory if it doesn't exist
-    if not os.path.exists('summarized'):
-        os.makedirs('summarized')
-
-    # Create the markdown filename based on the epub file
-    base_filename = os.path.basename(epub_file).replace('.epub', '')
-    markdown_filename = f'summarized/{base_filename}_summary.md'
-
-    # Write the summary to the markdown file
-    with open(markdown_filename, 'w') as md_file:
-        md_file.write("# Summary of {}\n\n".format(base_filename))
-        for i, summary in enumerate(summaries, 1):
-            md_file.write(f"## {summary['title']}\n\n")
-            md_file.write(summary['content'] + "\n\n")
-
-    logging.info(f"Summary saved to {markdown_filename}")
-
-# Function to display summaries with better formatting in CLI
-def display_formatted_summary(chapter_title, summary):
-    print(f"\n{'-'*50}")
-    print(f"{chapter_title} Summary:\n")
-    print(summary)
-    print(f"{'-'*50}\n")
-
-# Main function to summarize chapters from EPUB
-def summarize_epub_chapter_by_chapter(epub_file, api_key):
-    logging.info("Extracting chapters from the EPUB file...")
-    
-    # Extract chapters from the EPUB
-    chapters = extract_chapters_from_epub(epub_file)
     summaries = []
-
-    logging.info(f"Total chapters found: {len(chapters)}")
-
-    # Summarize each chapter and log progress
-    for i, chapter in enumerate(tqdm(chapters, desc="Summarizing chapters", leave=False, ncols=100), 1):
-        chapter_title = chapter['title']
-        chapter_text = chapter['text']
-
-        logging.info(f"Summarizing {chapter_title}...")
-        summary = generate_summary(api_key, chapter_title, chapter_text)
-
-        # Display summary in formatted CLI
-        display_formatted_summary(chapter_title, summary)
+    total_tokens = 0
+    
+    logging.info(f"Found {len(chapters)} chapters")
+    print(colorama.Fore.CYAN + f"Summarizing {len(chapters)} chapters:" + colorama.Fore.RESET)
+    
+    for i, chapter in enumerate(tqdm(chapters, bar_format='{l_bar}{bar}| {n_fmt}/{total_fmt}')):
+        chapter_title = get_chapter_title(chapter)
+        content = clean_text(chapter.get_content().decode('utf-8'))
+        logging.info(f"Processing chapter {i+1}: {chapter_title}, content length: {len(content)}")
         
-        summaries.append({'title': chapter_title, 'content': summary})
+        try:
+            stop_event = threading.Event()
+            t = threading.Thread(target=loading_animation, args=(stop_event,))
+            t.start()
+            
+            summary = summarize_text(content, api_key)
+            total_tokens += len(content.split()) + len(summary.split())
+            
+            stop_event.set()
+            t.join()
+            
+            summaries.append(f"## Chapter {i+1}: {chapter_title}\n\n{summary}\n")
+            
+            print(f"\n{colorama.Fore.GREEN}Chapter {i+1}: {chapter_title} - Summary:{colorama.Fore.RESET}")
+            print(summary)
+            print("\nProcessing next chapter...\n")
+        except KeyboardInterrupt:
+            print(f"\n{colorama.Fore.YELLOW}Process interrupted by user. Saving progress...{colorama.Fore.RESET}")
+            break
+        except Exception as e:
+            logging.error(f"Error processing chapter {i+1}: {str(e)}")
+            summaries.append(f"## Chapter {i+1}: {chapter_title}\n\nError processing this chapter: {str(e)}\n")
+    
+    return summaries, total_tokens
 
-    # Save the summary to a markdown file
-    save_summary_to_markdown(epub_file, summaries)
+def create_book_summary(summaries, api_key):
+    combined_summary = "\n".join(summaries)
+    book_summary = summarize_text(combined_summary, api_key)
+    return "# Book Summary\n\n" + book_summary + "\n\n# Chapter Summaries\n\n"
 
-if __name__ == "__main__":
-    if len(sys.argv) < 2:
-        print("Usage: python summarize.py <epub_file>")
+def save_summary(book_summary, summaries, epub_path, total_tokens):
+    base_name = os.path.splitext(os.path.basename(epub_path))[0]
+    output_dir = "summarized"
+    os.makedirs(output_dir, exist_ok=True)
+    output_path = os.path.join(output_dir, f"{base_name}_summary.md")
+    
+    estimated_cost = (total_tokens / 1000) * 0.06  # $0.06 per 1K tokens for GPT-4
+    
+    with open(output_path, 'w') as f:
+        f.write(f"Estimated cost: ${estimated_cost:.2f}\n\n")
+        f.write(book_summary)
+        for summary in summaries:
+            f.write(summary)
+    
+    print(f"\n{colorama.Fore.GREEN}Summary saved to:{colorama.Fore.RESET} {output_path}")
+    print(f"{colorama.Fore.YELLOW}Estimated cost: ${estimated_cost:.2f}{colorama.Fore.RESET}")
+
+def main():
+    epub_path = "input.epub"
+    
+    try:
+        with open('openai_key.txt', 'r') as f:
+            api_key = f.read().strip()
+    except FileNotFoundError:
+        print(f"{colorama.Fore.RED}Error: openai_key.txt not found. Please create this file with your OpenAI API key.{colorama.Fore.RESET}")
         sys.exit(1)
     
-    epub_file_path = sys.argv[1]
+    try:
+        summaries, total_tokens = process_epub(epub_path, api_key)
+        book_summary = create_book_summary(summaries, api_key)
+        save_summary(book_summary, summaries, epub_path, total_tokens)
+    except Exception as e:
+        logging.error(f"An error occurred: {str(e)}")
+        print(f"{colorama.Fore.RED}An error occurred. Please check the logs for more information.{colorama.Fore.RESET}")
 
-    # Read the API key from the file
-    with open("openai_key.txt", "r") as f:
-        openai_api_key = f.read().strip()
-    
-    # Summarize the EPUB chapter by chapter
-    summarize_epub_chapter_by_chapter(epub_file_path, openai_api_key)
+if __name__ == "__main__":
+    main()
